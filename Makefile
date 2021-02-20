@@ -9,7 +9,7 @@ all: cycfx2prog
 
 # NOTE: Also add sources to the "dist:" target!
 cycfx2prog: cycfx2prog.o cycfx2dev.o
-	$(CC) $(LDFLAGS) cycfx2prog.o cycfx2dev.o -o cycfx2prog
+	$(CC) -o cycfx2prog $^ $(LDFLAGS)
 
 clean:
 	-rm -f *.o
