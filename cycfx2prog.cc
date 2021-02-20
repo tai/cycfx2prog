@@ -163,6 +163,13 @@ static void PrintHelp()
 		"                 stdin if no file specified; chunk size CS with default 64\n"
 		"  bench_bulk:EP,L[,CS]  bench reading L bytes from endpoint EP (chunk size CS)\n"
 		"                 NOTE: This uses libusb and is slow on the host side!\n"
+		"  dint:EP,L[,N]  int read N (default: 1) buffers of size L from endpoint\n"
+		"                 EP (1,2,4,6,8) and dump them; L<0 to allow short reads\n"
+		"  sint:EP,STR    send string STR as int message to endpoint EP (1,2,4,6,8)\n"
+		"  fint:EP,FILE[,CS] send FILE as int message to endpoint EP (1,2,4,6,8)\n"
+		"                 stdin if no file specified; chunk size CS with default 64\n"
+		"  bench_int:EP,L[,CS]  bench reading L bytes from endpoint EP (chunk size CS)\n"
+		"                 NOTE: This uses libusb and is slow on the host side!\n"
 		"  altif:[IF]     set alt interface for next bulk IO; none for FX2 default\n"
 		"  ctrl:TYPE,REQUEST[,VALUE[,INDEX]] send a zero-length control message\n"
 		"Cypress FX2(LP) programmer tool v%s copyright (c) 2006--2009 by Wolfgang Wieser\n"
@@ -176,11 +183,14 @@ int main(int argc,char **arg)
 	const char *arg_bus_dev=NULL;
 	bool do_list=0;
 	int arg_vend=0x4b4,arg_prod=0x8613,arg_nth=0,arg_id_specified=0;
+
+        if (argc == 1) { PrintHelp(); return(0); }
+
 	for(int i=1; i<argc; i++)
 	{
-		if(!strcmp(arg[i],"--help"))
+		if(!strcmp(arg[i],"--help") || !strcmp(arg[i],"-h"))
 		{  PrintHelp();  return(0);  }
-		if(!strcmp(arg[i],"--version"))
+		if(!strcmp(arg[i],"--version") || !strcmp(arg[i],"-v"))
 		{
 			printf("cycfx2prog version %s\n",CYCFX2PROG_VERSION);
 			fflush(stdout);
@@ -190,7 +200,7 @@ int main(int argc,char **arg)
 		{  do_list=1;  }
 		else if(!strncmp(arg[i],"-d=",3))
 		{  arg_bus_dev=arg[i]+3;  }
-		else if(!strncmp(arg[i],"-id=",4))
+		else if(!strncmp(arg[i],"-id=",4) || !strncmp(arg[i],"--id=",5))
 		{
 			int rv=sscanf(arg[i]+4,"%x%*c%x%*c%d",&arg_vend,&arg_prod,&arg_nth);
 			if(rv<2)
@@ -408,6 +418,61 @@ int main(int argc,char **arg)
 				if(buf)  free(buf);
 			}
 		}
+		else if(!strcmp(cmd,"dint"))
+		{
+			int ep=-1;
+			int len=64;
+			int num=1;
+			char type='i';
+			
+			if(a[0] && *a[0])  {  ep=strtol(a[0],NULL,0);  }
+			if(a[1] && *a[1])  {  len=strtol(a[1],NULL,0);  }
+			if(a[2] && *a[2])  {  num=strtol(a[2],NULL,0);  }
+			// If len<0, allow short reads. 
+			if(len<0)
+			{  type='I';  len=-len;  }
+			if(ep<0 || ep>=127 || len<=0 || len>32*1024*1024 || num<1)
+			{  fprintf(stderr,"Command dint: Illegal/missing "
+				"endpoint/length/number.\n");  ++errors;  }
+			else
+			{
+				// IN endpoints have the bit 7 set. 
+				ep|=0x80;
+				
+				unsigned char *buf=(unsigned char*)CheckMalloc(malloc(len));
+				memset(buf,0,len);
+				
+				for(int i=0; i<num; i++)
+				{
+					fprintf(stderr,"Reading %s%d bytes from EP adr 0x%02x\n",
+						type=='I' ? "<=" : "",len,ep);
+					int rv=cycfx2.BlockRead(ep,buf,len,type);
+					errors += rv<0 ? 1 : 0;
+					if(rv>0)
+					{  HexDumpBuffer(stdout,buf,rv,/*with_ascii=*/1);  }
+				}
+				
+				if(buf)  free(buf);
+			}
+		}
+		else if(!strcmp(cmd,"sint"))
+		{
+			int ep=-1;
+			char type='i';
+			const char *str=a[1];
+			int len=str ? strlen(str) : 0;
+			
+			if(a[0] && *a[0])  {  ep=strtol(a[0],NULL,0);  }
+			if(ep<0 || ep>=127)
+			{  fprintf(stderr,"Command sint: Illegal/missing "
+				"endpoint.\n");  ++errors;  }
+			else
+			{
+				fprintf(stderr,"Sending %d bytes to EP adr 0x%02x\n",len,ep);
+				int rv=cycfx2.BlockWrite(ep,(const unsigned char*)str,len,type);
+				errors += rv<0 ? 1 : 0;
+			}
+		}
 		else if(!strcmp(cmd,"sbulk"))
 		{
 			int ep=-1;
@@ -470,6 +535,50 @@ int main(int argc,char **arg)
 				fprintf(stderr,"Sent %d bytes to EP adr 0x%02x\n",tot_bytes,ep);
 			} while(0);
 		}
+		else if(!strcmp(cmd,"fint"))
+		{
+			char type='i';
+			const char *filename = a[1];
+			int ep=-1;
+			int chunk_size=64;
+			
+			do {
+				if(a[0] && *a[0])  {  ep=strtol(a[0],NULL,0);  }
+				if(ep<0 || ep>=127)
+				{  fprintf(stderr,"Command fint: Illegal/missing "
+					"endpoint.\n");  ++errors;  break;  }
+				
+				if(a[2] && *a[2])  {  chunk_size=strtol(a[2],NULL,0);  }
+				if(chunk_size<1 || chunk_size>2048)
+				{  fprintf(stderr,"Command fint: Illegal chunk size %d.\n",
+					chunk_size);  ++errors;  break;  }
+				
+				FILE *stream = filename ? fopen(filename,"r") : stdin;
+				if(!stream)
+				{
+					fprintf(stderr,"Failed to open \"%s\" for reading: %s\n",
+						filename ? filename : "[stdin]",strerror(errno));
+					++errors;  break;
+				}
+				
+				int len;
+				int tot_bytes=0;
+				unsigned char buf[chunk_size];
+				
+				fprintf(stderr,"Sending \"%s\" in chunks of %d bytes to EP adr "
+					"0x%02x\n",
+					filename ? filename : "[stdin]",chunk_size,ep);
+				while((len=fread(buf,1,chunk_size,stream))>0)
+				{
+			    	int rv=cycfx2.BlockWrite(ep,buf,len,type);
+					if(rv<0)
+					{  ++errors; break;  }
+					tot_bytes += len;
+				}
+				if(filename) fclose(stream);
+				fprintf(stderr,"Sent %d bytes to EP adr 0x%02x\n",tot_bytes,ep);
+			} while(0);
+		}
 		else if(!strcmp(cmd,"bench_bulk"))
 		{
 			int ep=-1;
@@ -490,6 +599,29 @@ int main(int argc,char **arg)
 				ep|=0x80;
 				
 				int rv=cycfx2.BenchBlockRead(ep,len,cs,'b');
+				errors += rv ? 1 : 0;
+			}
+		}
+		else if(!strcmp(cmd,"bench_int"))
+		{
+			int ep=-1;
+			int len=1024*1024;
+			int cs=65536;
+			
+			if(a[0] && *a[0])  {  ep=strtol(a[0],NULL,0);  }
+			if(a[1] && *a[1])  {  len=strtol(a[1],NULL,0);  }
+			if(a[2] && *a[2])  {  cs=strtol(a[2],NULL,0);  }
+			// If len<0, allow short reads. 
+			if(ep<0 || ep>=127 || len<=0 || len>32*1024*1024 || 
+				cs<1 || cs>32*1024*1024)
+			{  fprintf(stderr,"Command bench_bulk: Illegal/missing "
+				"endpoint/length/number.\n");  ++errors;  }
+			else
+			{
+				// IN endpoints have the bit 7 set. 
+				ep|=0x80;
+				
+				int rv=cycfx2.BenchBlockRead(ep,len,cs,'i');
 				errors += rv ? 1 : 0;
 			}
 		}
