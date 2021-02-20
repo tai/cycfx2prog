@@ -43,8 +43,8 @@ struct usb_device *USBFindDevice(int vendor,int product,int nth)
 	{
 		for(struct usb_device *d=b->devices; d; d=d->next)
 		{
-			if(d->descriptor.idVendor==vendor && 
-				d->descriptor.idProduct==product)
+			if((vendor == 0 || d->descriptor.idVendor==vendor) && 
+				(product == 0 || d->descriptor.idProduct==product))
 			{
 				if(!nth--)
 				{  return(d);  }
